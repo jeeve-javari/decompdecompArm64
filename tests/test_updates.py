@@ -245,8 +245,35 @@ def test_a_windows_setup_reinstalls_its_bundle_and_runs_setup(monkeypatch, tmp_p
 
     assert calls[0][:5] == ["uv.exe", "pip", "install", "--python", updates.sys.executable]
     assert calls[0][5:7] == ["--target", str(Path(updates.sys.executable).resolve().parent.parent / "packages")]
+    assert "--find-links" not in calls[0]
     assert calls[1] == [updates.sys.executable,
                         str(Path(updates.sys.executable).resolve().parent.parent / "decomp-launch.pyw"), "setup"]
+
+
+def test_a_windows_arm_update_reuses_shipped_native_wheels(monkeypatch, tmp_path):
+    """capstone and pygfxd have no published Windows on Arm wheel. The setup.exe ships the ones CI built."""
+    from decompnet.app import edition
+
+    python = tmp_path / "app" / "python" / "python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"")
+    native = tmp_path / "app" / "native"
+    native.mkdir()
+    (native / "capstone-5.0.9-cp312-cp312-win_arm64.whl").write_bytes(b"wheel")
+    monkeypatch.setenv("DECOMP_PACKAGE", "windows")
+    monkeypatch.setattr(updates.sys, "platform", "win32")
+    monkeypatch.setattr(updates.sys, "executable", str(python))
+    monkeypatch.setattr(edition, "DEV", False)
+    monkeypatch.setattr(updates, "uv", lambda: "uv.exe")
+    monkeypatch.setattr(updates, "_stream", lambda cmd, _log, _failure: calls.append(cmd))
+    monkeypatch.setattr(updates, "info_file", lambda: tmp_path / "update.json")
+    calls = []
+    found = {"current": {"channel": "release"}, "latest": {"version": "1.2.3"}, "spec": "new-wheel"}
+
+    updates.install(found, log=lambda _line: None)
+
+    packages = tmp_path / "app" / "packages"
+    assert calls[0][5:9] == ["--target", str(packages), "--find-links", str(native)]
 
 
 def test_an_install_from_main_updates_on_releases_only():

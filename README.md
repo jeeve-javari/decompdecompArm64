@@ -9,7 +9,7 @@
   <a href="LICENSE"><img alt="AGPL-3.0 license" src="https://img.shields.io/badge/license-AGPL--3.0-157a49?style=flat-square"></a>
   <img alt="Linux" src="https://img.shields.io/badge/platform-Linux-15140f?style=flat-square">
   <img alt="macOS" src="https://img.shields.io/badge/platform-macOS%20Intel%20%2F%20Apple%20Silicon-15140f?style=flat-square">
-  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-15140f?style=flat-square">
+  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64%20%C2%B7%20Windows%2011%20Arm-15140f?style=flat-square">
   <a href="https://discord.gg/hhEm3zZagB"><img alt="Discord" src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white"></a>
   <img alt="Agents: Claude Code, Codex, opencode, Antigravity, any API model" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20opencode%20%C2%B7%20API%20models-157a49?style=flat-square">
 </p>
@@ -31,7 +31,7 @@ under a tenth of a second (1.4 s before), and agents restart by themselves after
 
 ## Install
 
-decompdecomp runs on **Linux and Windows 10/11** on x86-64, and **macOS 12+** on Intel or Apple Silicon. On Linux, install it with one command. The installer also gets
+decompdecomp runs on **Linux and Windows 10/11** on x86-64, **Windows 11 on Arm** (Snapdragon X Elite and the other Windows on Arm PCs), and **macOS 12+** on Intel or Apple Silicon. On Linux, install it with one command. The installer also gets
 the free compilers and keeps decompdecomp up to date:
 
 ```
@@ -47,7 +47,8 @@ chmod +x decompdecomp-*-x86_64.AppImage && ./decompdecomp-*-x86_64.AppImage   # 
 ```
 
 On **Windows**, download and open `decompdecomp-<version>-windows-x64-setup.exe` from the
-[releases](https://github.com/n-delic/decompdecomp/releases). Setup installs the Microsoft Edge WebView2 Runtime and
+[releases](https://github.com/n-delic/decompdecomp/releases). On Windows 11 on Arm (a Snapdragon X Elite, for example),
+download `decompdecomp-<version>-windows-arm64-setup.exe` instead: that build is native ARM64. Setup installs the Microsoft Edge WebView2 Runtime and
 .NET Framework 4.8 when they are missing, then opens the app installer. It may ask for administrator permission and
 needs an internet connection to download missing Microsoft components. The app installer lets you choose where
 decompdecomp goes and whether to add a desktop shortcut (selected by default); it always adds a shortcut to Start.
@@ -62,6 +63,8 @@ decomp shortcut
 decomp
 ```
 
+On Windows on Arm, use the setup.exe above. A source install has to compile capstone and pygfxd (PyPI has no Windows on Arm wheel for them), and that needs Visual Studio's ARM64 C++ tools.
+
 The app opens in a native Windows window. Its shortcuts appear on the desktop and in Start, and its tray icon
 brings back a window closed while helpers work. Free tools use Windows builds where available. Projects stay in your Windows `Decomp` folder.
 
@@ -69,10 +72,11 @@ brings back a window closed while helpers work. Free tools use Windows builds wh
 > **PS1, PS2 and most N64 games need WSL 2 on Windows.** Their period compilers (GCC for PlayStation, EE-GCC and
 > CodeWarrior for PS2, KMC GCC for N64) use their Linux builds through WSL 2 on Windows. Without it,
 > every compile of such a game fails. Set it up before you import one: run `wsl --install` in an administrator
-> PowerShell, restart if asked, then open Ubuntu once to finish its setup.
+> PowerShell, restart if asked, then open Ubuntu once to finish its setup. This does not work on Windows on Arm:
+> WSL there is Arm Linux, and these compilers are x86 programs, so those games can't be matched on that PC.
 >
 > GameCube, Wii, DS and Windows PC games, and N64 games built with IDO, don't need WSL: their compilers run on
-> Windows itself.
+> Windows itself. On Windows 11 on Arm those x64 builds run in the OS emulator.
 
 ### macOS (Intel and Apple Silicon)
 
@@ -173,8 +177,9 @@ What changed on the way:
   others), and its home page says what it removed. Before that, those entries started the old app again whenever
   you closed it.
 - **The Source tab is now the Export button** in the project's header.
-- **Windows projects and compilers.** The app server and window run natively on Windows. Linux-only period compilers
-  run through WSL 2, using temporary Linux-side build stages so old 32-bit tools work. Run `decomp shortcut` once to
+- **Windows projects and compilers.** The app server and window run natively on Windows, including Windows 11 on Arm.
+  Linux-only period compilers run through WSL 2 on x64 Windows, using temporary Linux-side build stages so old 32-bit tools work.
+  On Windows on Arm those compilers don't run. Run `decomp shortcut` once to
   put native shortcuts on the Windows desktop and in Start. Setup installs WebView2 and .NET Framework 4.8 when missing;
   pywebview is installed with the app.
 

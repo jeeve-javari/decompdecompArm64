@@ -33,6 +33,8 @@ MANIFEST = ".decompnet-toolchain.json"
 LINUX = "linux-x86_64"
 # Parts for WSL: Linux programs packed in a format Windows can unpack (a .deb, not a .zst)
 WSL_PLATFORM = "wsl-x86_64"
+WINDOWS_X64 = "windows-x86_64"
+WINDOWS_ARM = "windows-arm64"  # Snapdragon X Elite and other Windows on Arm PCs
 
 
 class ToolchainError(RuntimeError):
@@ -68,11 +70,20 @@ class Toolchain:
 
     def parts_for(self, plat: str | None = None) -> list[dict]:
         plat = plat or current_platform()
-        return [p for p in self.parts if plat in p.get("platforms", [plat])]
+        exact = [p for p in self.parts if plat in p.get("platforms", [plat])]
+        if exact or plat != WINDOWS_ARM:
+            return exact
+        # No Arm build of this tool. Windows 11 on Arm runs the pinned x64 Windows build through its emulator
+        # (Prism on a Snapdragon X Elite). A part with no platform list already matched above.
+        return [p for p in self.parts if WINDOWS_X64 in p.get("platforms", [])]
 
     @property
     def via_wsl(self) -> bool:
-        """A Linux-only toolchain on Windows: installed from its Linux build and run inside WSL 2 (see wsl.py)."""
+        """A Linux-only toolchain on Windows: installed from its Linux build and run inside WSL 2 (see wsl.py).
+
+        Not on Windows on Arm. WSL there is Arm Linux, and these compilers are x86 programs."""
+        if current_platform() == WINDOWS_ARM:
+            return False
         return wsl.wanted() and not self.git and not self.parts_for() and bool(self.parts_for(LINUX))
 
     def linux_parts(self) -> list[dict]:
@@ -85,23 +96,39 @@ class Toolchain:
 
 
 def current_platform() -> str:
-    """linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64 or windows-x86_64."""
+    """linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64, windows-x86_64 or windows-arm64."""
     os_name = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux" if sys.platform.startswith("linux") else sys.platform)
     machine = _platform.machine().lower()
-    machine = {"amd64": "x86_64", "x64": "x86_64", "arm64": "arm64" if os_name == "macos" else "aarch64",
-               "aarch64": "aarch64" if os_name != "macos" else "arm64"}.get(machine, machine)
+    if machine in ("amd64", "x64"):
+        machine = "x86_64"
+    elif machine in ("arm64", "aarch64"):
+        # macOS and Windows call this processor arm64; Linux calls it aarch64
+        machine = "aarch64" if os_name == "linux" else "arm64"
     return f"{os_name}-{machine}"
 
 
 def unsupported_cpu() -> str | None:
-    """Supported hosts; Apple Silicon uses native builds or Intel Mac tools through Rosetta.
-    Each tool still checks that its own build is available before installation."""
+    """Supported hosts. Apple Silicon uses native builds or Intel Mac tools through Rosetta. Windows on Arm
+    (Snapdragon X Elite and the other Windows 11 Arm PCs) uses native Arm builds or the x64 Windows tools
+    through the OS emulator. Each tool still checks that its own build is available before installation."""
     host = current_platform()
     machine = host.split("-", 1)[1]
-    if machine == "x86_64" or host == "macos-arm64":
+    if machine == "x86_64" or host in ("macos-arm64", WINDOWS_ARM):
         return None
-    return (f"decompdecomp needs a 64-bit Intel or AMD PC for now (the games' compilers are x86 programs; this "
-            f"computer's processor is {machine})")
+    return (f"decompdecomp needs a 64-bit Intel or AMD PC, or Windows 11 on Arm, for now (the games' compilers "
+            f"are x86 programs; this computer's processor is {machine})")
+
+
+def support_gap(tc: Toolchain) -> str | None:
+    """Why this toolchain can't be installed here, when the platform being allowed isn't the whole reason."""
+    if tc.supported:
+        return None
+    if why := unsupported_cpu():
+        return why
+    if current_platform() == WINDOWS_ARM and any("linux-x86_64" in p.get("platforms", []) for p in tc.parts):
+        return ("it's an x86 Linux program. On Windows it runs in WSL, and WSL on this Arm PC is Arm Linux, "
+                "which can't run it")
+    return None
 
 
 @functools.cache
@@ -160,15 +187,46 @@ def _intel_mac_runtime_ready() -> bool:
         return False
 
 
+def _needs_x64_emulation(tid: str) -> bool:
+    """A Windows on Arm install of this tool is the pinned x64 Windows build, not an Arm one."""
+    if current_platform() != WINDOWS_ARM or tid not in _registry_data():
+        return False
+    return any(WINDOWS_X64 in p.get("platforms", []) and WINDOWS_ARM not in p.get("platforms", [])
+               for p in get(tid).parts_for())
+
+
+@functools.cache
+def _windows_x64_emulation_ready() -> bool:
+    """Windows 11 on Arm runs x64 programs (Prism, on a Snapdragon X Elite). Windows 10 on Arm does not.
+    Off Windows there's nothing to probe; the parts are still the ones to install."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        supported = ctypes.c_int()
+        kernel32.IsWow64GuestMachineSupported.argtypes = [ctypes.c_ushort, ctypes.POINTER(ctypes.c_int)]
+        kernel32.IsWow64GuestMachineSupported.restype = ctypes.c_long
+        hr = kernel32.IsWow64GuestMachineSupported(0x8664, ctypes.byref(supported))  # IMAGE_FILE_MACHINE_AMD64
+        return hr == 0 and bool(supported.value)
+    except (OSError, AttributeError):
+        return False
+
+
 def runtime_error(tid: str) -> str | None:
-    """Intel-only Mac compiler archives need Apple's translation runtime on Apple Silicon."""
-    if current_platform() != "macos-arm64" or not any(p.get("rosetta") for p in get(tid).parts_for()):
-        return None
-    if _intel_mac_runtime_ready():
-        return None
-    _intel_mac_runtime_ready.cache_clear()  # a newly installed Rosetta runtime works on the next compile
-    return (f"{tid} uses Intel macOS binaries and needs Rosetta 2 on Apple Silicon. "
-            "Run `softwareupdate --install-rosetta` in Terminal, accept Apple's license if you agree, then try again.")
+    """Intel-only Mac compiler archives need Apple's translation runtime on Apple Silicon. x64 Windows tools
+    need Windows 11's emulator on an Arm PC."""
+    if current_platform() == "macos-arm64" and any(p.get("rosetta") for p in get(tid).parts_for()):
+        if _intel_mac_runtime_ready():
+            return None
+        _intel_mac_runtime_ready.cache_clear()  # a newly installed Rosetta runtime works on the next compile
+        return (f"{tid} uses Intel macOS binaries and needs Rosetta 2 on Apple Silicon. "
+                "Run `softwareupdate --install-rosetta` in Terminal, accept Apple's license if you agree, then try again.")
+    if _needs_x64_emulation(tid) and not _windows_x64_emulation_ready():
+        _windows_x64_emulation_ready.cache_clear()
+        return (f"{tid} is an x64 Windows program. This Arm PC's Windows can't run x64 programs "
+                "(Windows 11 can; Windows 10 on Arm can't).")
+    return None
 
 
 def require(tid: str, linux: bool | None = None) -> Path:
@@ -311,7 +369,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
         return path(tid, linux)
     parts = tc.linux_parts() if linux else tc.parts_for()
     if not parts and not tc.git:
-        why = unsupported_cpu()
+        why = support_gap(tc)
         raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})"
                              + (f": {why}" if why else ""))
     if tc.requires_java and jdk_version() < tc.requires_java:  # the computer has none: the pinned one runs it
@@ -325,7 +383,10 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    log(f"{tid}: installing {tc.name} [{tc.license}]" + (" (Linux build, runs in WSL 2)" if linux else ""))
+    emulated = not linux and _needs_x64_emulation(tid)
+    log(f"{tid}: installing {tc.name} [{tc.license}]"
+        + (" (Linux build, runs in WSL 2)" if linux else "")
+        + (" (x64 Windows build, runs in Windows on Arm's emulator)" if emulated else ""))
     pinned = []
     try:
         if tc.git or tc.pip_extra:

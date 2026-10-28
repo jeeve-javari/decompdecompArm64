@@ -459,6 +459,8 @@ Where to start on a gap:
   follow the page's theme too. Closing asks whether to keep helpers working. Kernel jobs end helper children after
   a session or an app crash. Tools have pinned Windows builds; Linux-only compilers use WSL 2 with Linux-side tool
   and build caches. Windows CI checks the native and portable code beside the existing Linux checks.
+  Windows 11 on Arm (Snapdragon X Elite and the other Windows on Arm PCs) gets its own native ARM64 setup.
+  x64 Windows tools run in the OS emulator. x86 Linux compilers don't: WSL on that PC is Arm Linux.
 - **Struct layouts from loads and stores** (MIPS: PlayStation 2, N64). Every load and store through a function's
   pointer arguments, the pointers loaded from them and globals, made into types along the call graph: the brief
   names each pointer argument's likely fields (offset, width, how many functions agree), `guess_struct` writes the
@@ -530,7 +532,7 @@ code (`min` as `slt` and `movn`, outside delay slots) would give those drafts th
 ### Windows distribution
 
 The Windows release MSI bundles Python and the app, creates Start and desktop shortcuts, and updates
-through the app. Next: sign the installer and check for WebView2 and WSL during setup.
+through the app. x64 and Windows 11 on Arm each get a setup bundle. Next: sign the installer and check for WebView2 and WSL during setup.
 
 ### Better splits reach existing ROM projects
 

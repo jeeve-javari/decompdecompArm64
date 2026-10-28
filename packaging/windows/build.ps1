@@ -1,9 +1,62 @@
 # Build the Windows setup bundle used by the release workflow. It installs missing Microsoft runtimes before running
 # the app's MSI. WiX 3 is used because it does not require accepting the WiX 7 Open Source Maintenance Fee agreement.
 [CmdletBinding()]
-param([switch]$SkipInstallSmoke)
+param(
+    [ValidateSet('x64', 'arm64')]
+    [string]$Arch = '',
+    [switch]$SkipInstallSmoke
+)
 
 $ErrorActionPreference = 'Stop'
+# The installer bundles a native Python, so it has to be built on the machine it will run on.
+if (-not $Arch) {
+    $Arch = $(if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' })
+}
+if ($Arch -eq 'arm64' -and $env:PROCESSOR_ARCHITECTURE -ne 'ARM64') {
+    throw "An arm64 installer has to be built by native ARM64 Windows (this process is $($env:PROCESSOR_ARCHITECTURE)). There is no cross-compile."
+}
+if ($Arch -eq 'x64' -and $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+    throw 'An x64 installer has to be built on x64 Windows. This process is ARM64.'
+}
+# uv names the Windows on Arm runtime windows-aarch64; the rest of decompdecomp calls the host windows-arm64.
+$pythonTriple = $(if ($Arch -eq 'arm64') { 'windows-aarch64' } else { 'windows-x86_64' })
+$artifact = "windows-$Arch"
+$peMachine = $(if ($Arch -eq 'arm64') { 0xAA64 } else { 0x8664 })
+
+function Remove-LockedPackages([string]$Path, [string[]]$Names) {
+    # uv export --locked writes `name==version \` plus `--hash` lines. Those hashes would force a
+    # source rebuild and ignore the wheel this script just compiled for Windows on Arm.
+    $lines = [IO.File]::ReadAllLines($Path)
+    $kept = New-Object System.Collections.Generic.List[string]
+    $i = 0
+    while ($i -lt $lines.Length) {
+        $block = New-Object System.Collections.Generic.List[string]
+        do {
+            $block.Add($lines[$i])
+            $cont = $lines[$i].TrimEnd().EndsWith('\')
+            $i++
+        } while ($cont -and $i -lt $lines.Length)
+        $head = $block[0].Trim()
+        $drop = $false
+        foreach ($name in $Names) {
+            if ($head.StartsWith("$name==") -or $head.StartsWith("$name ")) { $drop = $true }
+        }
+        if (-not $drop) { foreach ($line in $block) { $kept.Add($line) } }
+    }
+    [IO.File]::WriteAllLines($Path, $kept)
+}
+
+function Assert-PeMachine([string]$Path, [int]$Machine) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+        throw "$Path is not a Windows executable."
+    }
+    $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+    $got = [BitConverter]::ToUInt16($bytes, $pe + 4)
+    if ($got -ne $Machine) {
+        throw ("{0} is PE machine 0x{1:X4}; this {2} bundle needs 0x{3:X4}." -f $Path, $got, $Arch, $Machine)
+    }
+}
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $version = (Select-String '^version = "(.*)"' (Join-Path $repoRoot 'pyproject.toml')).Matches.Groups[1].Value
 $work = Join-Path ([IO.Path]::GetTempPath()) ("decompdecomp-build-" + [guid]::NewGuid())
@@ -28,7 +81,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "uv python install failed with exit code $LASTEXITCODE" }
     $pythonDir = (uv python dir --managed-python).Trim()
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pythonDir)) { throw 'uv could not find its managed Python directory.' }
-    $pythonHome = (Get-ChildItem -LiteralPath $pythonDir -Directory -Filter 'cpython-3.12.*-windows-x86_64-none' |
+    $pythonHome = (Get-ChildItem -LiteralPath $pythonDir -Directory -Filter "cpython-3.12.*-$pythonTriple-none" |
         Sort-Object Name -Descending | Select-Object -First 1).FullName
     if (-not $pythonHome) { throw 'uv could not find its managed Python 3.12 installation.' }
     $python = Join-Path $pythonHome 'python.exe'
@@ -40,8 +93,23 @@ try {
     if (-not $wheel) { throw 'uv did not produce a decompdecomp wheel.' }
     $packages = Join-Path $app 'packages'
     New-Item -ItemType Directory -Force $packages | Out-Null
+    # On Windows on Arm, capstone 5.0.9 and pygfxd 1.0.5 have no wheel. Compile them and keep the
+    # wheels under app/native so an update can find them again (updates.py --find-links).
+    if ($Arch -eq 'arm64') {
+        $native = Join-Path $app 'native'
+        & (Join-Path $PSScriptRoot 'native-wheels.ps1') -OutDir $native
+        if ($LASTEXITCODE -ne 0) { throw "Windows on Arm wheel build failed with exit code $LASTEXITCODE" }
+        Remove-LockedPackages $runtimeRequirements @('capstone', 'pygfxd')
+    }
     uv pip install --python (Join-Path $bundlePython 'python.exe') --target $packages --requirements $runtimeRequirements
     if ($LASTEXITCODE -ne 0) { throw "uv pip install of locked runtime dependencies failed with exit code $LASTEXITCODE" }
+    if ($Arch -eq 'arm64') {
+        $nativeWheels = @(Get-ChildItem -LiteralPath (Join-Path $app 'native') -Filter '*.whl')
+        if ($nativeWheels.Count -lt 2) { throw 'Windows on Arm native wheels were not built (capstone and pygfxd).' }
+        $pipArgs = @('pip', 'install', '--python', (Join-Path $bundlePython 'python.exe'), '--target', $packages, '--no-deps') + @($nativeWheels.FullName)
+        uv @pipArgs
+        if ($LASTEXITCODE -ne 0) { throw "uv pip install of the ARM64 wheels failed with exit code $LASTEXITCODE" }
+    }
     uv pip install --python (Join-Path $bundlePython 'python.exe') --target $packages --no-deps $wheel
     if ($LASTEXITCODE -ne 0) { throw "uv pip install failed with exit code $LASTEXITCODE" }
     Copy-Item -LiteralPath (Get-Command uv).Source -Destination (Join-Path $app 'uv.exe') -Force
@@ -90,8 +158,8 @@ raise SystemExit(main())
         throw 'WiX Toolset 3.14.1 is missing. Set WIX_BIN to its bin directory.'
     }
     $msiVersion = ($version -split '-')[0]
-    $installer = Join-Path $dist "decompdecomp-$version-windows-x64.msi"
-    $setup = Join-Path $dist "decompdecomp-$version-windows-x64-setup.exe"
+    $installer = Join-Path $dist "decompdecomp-$version-$artifact.msi"
+    $setup = Join-Path $dist "decompdecomp-$version-$artifact-setup.exe"
     $harvest = Join-Path $work 'app-files.wxs'
     $objects = Join-Path $work 'wix-objects'
     $bundleObjects = Join-Path $work 'bundle-objects'
@@ -135,7 +203,7 @@ raise SystemExit(main())
     New-Item -ItemType Directory -Force $objects | Out-Null
     & (Join-Path $wixBin 'heat.exe') dir $app -cg AppFiles -dr INSTALLFOLDER -gg -sfrag -sreg -srd -var var.AppSource -out $harvest
     if ($LASTEXITCODE -ne 0) { throw "WiX Heat failed with exit code $LASTEXITCODE" }
-    & (Join-Path $wixBin 'candle.exe') -arch x64 "-dAppVersion=$version" "-dMsiVersion=$msiVersion" `
+    & (Join-Path $wixBin 'candle.exe') -arch $Arch "-dAppVersion=$version" "-dMsiVersion=$msiVersion" `
         "-dAppSource=$app" "-dLicenseRtf=$licenseRtf" -out "$objects\" (Join-Path $PSScriptRoot 'installer.wxs') $harvest
     if ($LASTEXITCODE -ne 0) { throw "WiX Candle failed with exit code $LASTEXITCODE" }
     $wixObjects = (Get-ChildItem -LiteralPath $objects -Filter '*.wixobj' | ForEach-Object FullName)
@@ -148,13 +216,16 @@ raise SystemExit(main())
     if ($LASTEXITCODE -ne 0) { throw "WiX Light failed with exit code $LASTEXITCODE" }
 
     $bundleObject = Join-Path $bundleObjects 'bundle.wixobj'
-    & (Join-Path $wixBin 'candle.exe') -arch x64 -ext WixBalExtension -ext WixUtilExtension `
+    & (Join-Path $wixBin 'candle.exe') -arch $Arch -ext WixBalExtension -ext WixUtilExtension `
         "-dAppVersion=$version" "-dMsiVersion=$msiVersion" "-dAppMsi=$installer" `
         "-dLicenseRtf=$licenseRtf" "-dNetFxInstaller=$netFxInstaller" "-dWebView2Installer=$webView2Installer" `
         -out $bundleObject (Join-Path $PSScriptRoot 'bundle.wxs')
     if ($LASTEXITCODE -ne 0) { throw "WiX Candle failed to compile the Windows setup bundle (exit code $LASTEXITCODE)" }
     & (Join-Path $wixBin 'light.exe') -ext WixBalExtension -ext WixUtilExtension -out $setup $bundleObject
     if ($LASTEXITCODE -ne 0) { throw "WiX Light failed to link the Windows setup bundle (exit code $LASTEXITCODE)" }
+    Assert-PeMachine (Join-Path $bundlePython 'python.exe') $peMachine
+    Assert-PeMachine (Join-Path $app 'uv.exe') $peMachine
+    Assert-PeMachine $setup $peMachine
     if ((Get-AuthenticodeSignature -LiteralPath $netFxInstaller).Status -ne 'Valid' -or
         (Get-AuthenticodeSignature -LiteralPath $webView2Installer).Status -ne 'Valid') {
         throw 'A Microsoft prerequisite signature became invalid while building the setup bundle.'
@@ -235,8 +306,8 @@ raise SystemExit(main())
             }
         }
     }
-    Remove-Item -LiteralPath (Join-Path $dist "decompdecomp-$version-windows-x64.wixpdb") -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $dist "decompdecomp-$version-windows-x64-setup.wixpdb") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $dist "decompdecomp-$version-$artifact.wixpdb") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $dist "decompdecomp-$version-$artifact-setup.wixpdb") -Force -ErrorAction SilentlyContinue
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }

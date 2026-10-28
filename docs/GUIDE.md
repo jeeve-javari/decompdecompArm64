@@ -257,9 +257,12 @@ for x86_64 Linux. They contain their own Python and uv. The app's Setup gets the
 update themselves: the app tells you when a new version is available, and you download it from the releases.
 
 **Windows.** The release setup bundle installs missing WebView2 and .NET Framework 4.8 runtimes, then opens the app
-installer, which lets you choose an installation folder and whether to add a desktop shortcut. Linux-only period
-compilers run through WSL 2; run `wsl --install` in an
-administrator PowerShell, restart if asked, and open Ubuntu once before importing a game that needs one.
+installer, which lets you choose an installation folder and whether to add a desktop shortcut. x64 Windows uses
+`decompdecomp-<version>-windows-x64-setup.exe`. Windows 11 on Arm (Snapdragon X Elite and the other Windows on Arm
+PCs) uses `decompdecomp-<version>-windows-arm64-setup.exe`, a native ARM64 build; its x64 Windows tools run in the
+OS emulator. On x64 Windows, Linux-only period compilers run through WSL 2; run `wsl --install` in an
+administrator PowerShell, restart if asked, and open Ubuntu once before importing a game that needs one. On Windows
+on Arm that does not work: WSL there is Arm Linux, so PS1, PS2 and KMC N64 games can't be matched on that PC.
 
 **macOS (Intel and Apple Silicon).** Install the current source with
 `curl -fsSL https://decomp.ndelic.com/install.sh | bash -s -- --source branch:main` until a Mac-capable release is

@@ -70,6 +70,75 @@ def test_windows_tools_have_native_pinned_downloads():
         assert parts and all(len(part["sha256"]) == 64 for part in parts), name
 
 
+def test_a_windows_arm_pc_is_a_supported_host(monkeypatch):
+    """Windows reports this processor as ARM64. The host id stays windows-arm64 (uv's Python dir is windows-aarch64)."""
+    monkeypatch.setattr(toolchains.sys, "platform", "win32")
+    monkeypatch.setattr(toolchains._platform, "machine", lambda: "ARM64")
+    assert toolchains.current_platform() == "windows-arm64"
+    assert toolchains.unsupported_cpu() is None
+
+
+def test_windows_on_arm_uses_x64_tools_and_skips_wsl(monkeypatch):
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-arm64")
+    monkeypatch.setattr(toolchains.wsl, "wanted", lambda: True)
+    objdiff = toolchains.get("objdiff-cli")
+    assert objdiff.supported and not objdiff.via_wsl
+    assert objdiff.parts_for() == objdiff.parts_for("windows-x86_64")
+    assert all("windows-x86_64" in part.get("platforms", []) for part in objdiff.parts_for())
+    ee = toolchains.get("ee-gcc-2.96")
+    assert not ee.supported and not ee.via_wsl
+    assert "Arm Linux" in (toolchains.support_gap(ee) or "")
+    assert toolchains.get("ido-7.1").supported
+    # A part with no platform list is already for every host. The x64 fallback must not drop it.
+    assert toolchains.get("mwcc").supported
+    assert toolchains.get("decomp-permuter").parts_for() == toolchains.get("decomp-permuter").parts
+    assert toolchains.support_gap(objdiff) is None
+
+
+def test_windows_x64_still_runs_linux_compilers_in_wsl(monkeypatch):
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-x86_64")
+    monkeypatch.setattr(toolchains.wsl, "wanted", lambda: True)
+    assert toolchains.get("ee-gcc-2.96").via_wsl
+    assert not toolchains.get("objdiff-cli").via_wsl
+
+
+def test_windows_on_arm_refuses_x64_tools_without_the_emulator(monkeypatch, tmp_path):
+    """Windows 10 on Arm has no x64 emulator. The probe is skipped off Windows, so the test stubs it."""
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-arm64")
+    monkeypatch.setattr(toolchains.wsl, "wanted", lambda: True)
+
+    def not_ready():
+        return False
+
+    not_ready.cache_clear = lambda: None
+    monkeypatch.setattr(toolchains, "_windows_x64_emulation_ready", not_ready)
+    monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path))
+    downloads = []
+    monkeypatch.setattr(toolchains, "_download", lambda *args, **kwargs: downloads.append(args))
+    with pytest.raises(toolchains.ToolchainError, match="x64"):
+        toolchains.install("objdiff-cli", log=lambda *_: None)
+    assert not downloads
+
+
+def test_x64_emulation_probe_does_not_block_off_windows():
+    toolchains._windows_x64_emulation_ready.cache_clear()
+    if os.name == "nt":
+        pytest.skip("the off-Windows short-circuit is what this checks")
+    assert toolchains._windows_x64_emulation_ready() is True
+
+
+def test_arm64_wheel_builds_use_the_locked_source_archives():
+    """native-wheels.ps1 downloads the same archives uv.lock pins, so a lock bump fails this until the script matches."""
+    root = Path(__file__).parents[1]
+    script = (root / "packaging/windows/native-wheels.ps1").read_text(encoding="utf-8")
+    lock = (root / "uv.lock").read_text(encoding="utf-8")
+    for name in ("capstone", "pygfxd"):
+        block = lock.split(f'name = "{name}"', 1)[1].split("[[package]]", 1)[0]
+        url = block.split('sdist = { url = "', 1)[1].split('"', 1)[0]
+        digest = block.split('hash = "sha256:', 1)[1].split('"', 1)[0]
+        assert url in script and digest in script, name
+
+
 def test_windows_tray_relays_actions_without_starting_a_desktop(monkeypatch):
     import io
     from types import SimpleNamespace
