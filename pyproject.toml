@@ -12,6 +12,10 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "capstone>=5.0.9",
+    # 47 through 50 publish no Windows on Arm wheel. cryptography is only here because mcp
+    # pulls it in for JWT; the judge never uses it. Other platforms stay on the current release.
+    "cryptography==50.0.2; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "cryptography==46.0.3; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "mcp>=2.3.0",
     "pyelftools>=0.33",
     "splat64[mips]>=0.50.1",

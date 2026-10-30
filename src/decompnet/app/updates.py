@@ -206,8 +206,14 @@ def install(found: dict, log=print) -> dict:
     if sys.platform == "win32":
         cmd = [uv(), "pip", "install", "--python", sys.executable]
         if os.environ.get("DECOMP_PACKAGE") == "windows":
-            packages = Path(sys.executable).resolve().parent.parent / "packages"
+            root = Path(sys.executable).resolve().parent.parent
+            packages = root / "packages"
             cmd.extend(["--target", str(packages)])
+            # Windows on Arm ships capstone and pygfxd wheels PyPI doesn't have. A later update finds them
+            # here instead of trying to compile them. After --target: the update test checks that flag first.
+            native = root / "native"
+            if native.is_dir() and any(native.glob("*.whl")):
+                cmd.extend(["--find-links", str(native)])
         cmd.extend(["--reinstall-package", "decompnet", found["spec"]])
     else:
         cmd = [uv(), "tool", "install", "--force", "--python", "3.12", found["spec"]]

@@ -10,6 +10,8 @@
 #
 # Each part lists its host platforms. Windows uses native tools where available, and Linux-only compilers
 # through WSL 2 (wsl.py). A part for wsl-x86_64 replaces the Linux archive there (a .deb Windows can unpack).
+# Windows on Arm (windows-arm64) has no parts of its own: it installs the windows-x86_64 build and runs it
+# in Windows 11's x64 emulator. WSL there is Arm Linux, so the x86 Linux compilers do not run.
 # macOS uses its pinned builds directly; Intel-only parts need Rosetta on Apple Silicon.
 
 [runtime-i386]

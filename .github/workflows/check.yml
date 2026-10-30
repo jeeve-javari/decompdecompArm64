@@ -21,6 +21,30 @@ jobs:
         run: uv run pytest -q -rs
         env:
           DECOMP_TRAY: "0"
+  windows-arm:
+    # Snapdragon X Elite and the other Windows on Arm PCs. capstone and pygfxd have no published
+    # win_arm64 wheel, so this job compiles the locked source archives before the tests. The x86
+    # Linux compilers are not installed here: WSL on this runner is Arm Linux and cannot run them.
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Native extensions, lint and tests
+        shell: pwsh
+        env:
+          DECOMP_TRAY: "0"
+        run: |
+          ./packaging/windows/native-wheels.ps1 -OutDir "$env:RUNNER_TEMP\native"
+          uv sync --locked --no-install-package capstone --no-install-package pygfxd
+          if ($LASTEXITCODE -ne 0) { throw "uv sync failed with exit code $LASTEXITCODE" }
+          $wheels = @(Get-ChildItem "$env:RUNNER_TEMP\native" -Filter '*.whl' | ForEach-Object FullName)
+          if ($wheels.Count -lt 2) { throw 'Windows on Arm native wheels were not built (capstone and pygfxd).' }
+          uv pip install --python .venv\Scripts\python.exe --no-deps @wheels
+          if ($LASTEXITCODE -ne 0) { throw "installing the native wheels failed with exit code $LASTEXITCODE" }
+          uv run ruff check src tests projects
+          if ($LASTEXITCODE -ne 0) { throw "ruff failed with exit code $LASTEXITCODE" }
+          uv run pytest -q -rs
+          if ($LASTEXITCODE -ne 0) { throw "pytest failed with exit code $LASTEXITCODE" }
   macos:
     strategy:
       fail-fast: false

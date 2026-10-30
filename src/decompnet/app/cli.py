@@ -261,7 +261,9 @@ def setup(args) -> int:
     for tid in ("gcc-2.7.2-kmc", "m2c", "decomp-permuter", "objdiff-cli"):
         tc = toolchains.get(tid)
         if not tc.supported:
-            print(f"  - {tc.name}: no build for {plat} (projects that need it can't be matched here yet)")
+            why = toolchains.support_gap(tc)
+            print(f"  - {tc.name}: no build for {plat}" + (f" ({why})" if why else "")
+                  + " (projects that need it can't be matched here yet)")
             continue
         try:
             toolchains.install(tid, log=lambda line: print(f"  {line}"))
